@@ -8,8 +8,7 @@
     "login": "node src/login.js",
     "check": "node src/check.js",
     "send": "node src/send.js",
-    "pair": "node src/send.js pair",
-    "clear": "node src/send.js clear",
+    "pair": "node src/run-cloudflare-pair.js",
     "cloudflare:auth:export": "node src/export-cloudflare-auth.js"
   },
   "dependencies": {

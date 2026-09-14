@@ -1,97 +1,75 @@
-# LINE OA Cloudflare 排程
+# Cloudflare LINE Pairup Worker
 
-這個 Worker 不使用 LINE Messaging API。它透過 Cloudflare Browser Run 開啟 `chat.line.biz`，恢復本機匯出的登入 cookies，然後操作 LINE 網頁輸入框送出指令。
+Worker 使用 Cloudflare Browser Rendering 操作 `chat.line.biz` 和公開可編輯的 Google Sheet，不使用 LINE Messaging API。
 
 ## 排程（Asia/Taipei）
 
-- 每天 07:00：`clear`（Cloudflare UTC cron：`0 23 * * *`）
-- 每天 17:05：`pair`（Cloudflare UTC cron：`5 9 * * *`）
+- 17:05：下載當下的 Google Sheet CSV、執行 pairup 配對、傳送完整配對資訊。
+- 21:00 clear：目前暫停，程式碼保留但沒有啟用 cron。
 
-Cloudflare Cron 一律使用 UTC，因此早上 07:00 對應前一天 23:00 UTC。
+Cloudflare cron 使用 UTC，因此設定是：
 
-## 初次部署
+```text
+5 9 * * *   # 17:05 Asia/Taipei，pair
+# 0 13 * * *  # 21:00 Asia/Taipei，clear（目前停用）
+```
 
-先確認上一層 `config.json` 具有目前 Ram 聊天室的 `chatUrl`，而且 `npm run check` 能正常登入。
+`clear` 不提供手動執行端點，避免誤刪仍在使用的當日資料。
+
+## 驗證與部署
 
 ```powershell
 cd C:\Users\user\Desktop\project\line-local-puppeteer\cloudflare-worker
 npm install
-npx wrangler login
+npm test
+npm run check
 npm run deploy
 ```
 
-第一次部署時 Wrangler 會自動建立 `LINE_STATE` KV namespace，並把 namespace ID 寫回 `wrangler.jsonc`。
+Worker 需要下列 Cloudflare bindings：
 
-接著回到上一層，匯出本機登入狀態：
+- `BROWSER`：Browser Rendering
+- `LINE_STATE`：保存 LINE cookies 和最後執行結果的 KV namespace
+- `ADMIN_TOKEN`：保護管理端點的 Worker secret
+
+重新上傳 LINE 登入狀態：
 
 ```powershell
 cd C:\Users\user\Desktop\project\line-local-puppeteer
 npm run cloudflare:auth:export
-```
-
-再上傳到 Cloudflare KV：
-
-```powershell
 cd cloudflare-worker
 npm run auth:upload
 ```
 
-`.line-auth-state.json` 含有 LINE 登入 cookies，已加入 `.gitignore`，請勿分享。
+## 端點
 
-## 設定手動操作權杖
-
-排程本身不需要 `ADMIN_TOKEN`。若要使用狀態查詢或手動測試端點，執行：
+公開健康檢查：
 
 ```powershell
-npx wrangler secret put ADMIN_TOKEN
+Invoke-RestMethod https://line-oa-scheduler.clearbot-user-2026.workers.dev/health
 ```
 
-輸入一段足夠長且隨機的字串。
-
-## 手動驗證
-
-健康檢查：
-
-```powershell
-Invoke-RestMethod https://你的-worker.workers.dev/health
-```
-
-查詢登入狀態：
+需要 `ADMIN_TOKEN` 的 LINE 登入檢查：
 
 ```powershell
 $token = Read-Host "ADMIN_TOKEN"
 $headers = @{ Authorization = "Bearer $token" }
-Invoke-RestMethod https://你的-worker.workers.dev/auth/status -Headers $headers
+Invoke-RestMethod https://line-oa-scheduler.clearbot-user-2026.workers.dev/check -Headers $headers
 ```
 
-實際啟動 Cloudflare Browser Run 並確認 LINE 登入與輸入框，但不送訊息：
+手動計算並送出 pair：
 
 ```powershell
-Invoke-RestMethod https://你的-worker.workers.dev/check -Headers $headers
+Invoke-RestMethod -Method Post https://line-oa-scheduler.clearbot-user-2026.workers.dev/run/pair -Headers $headers
 ```
 
-以下指令會真的在 LINE 群組送出訊息：
+`POST /run/clear` 不存在；clear 只能由 21:00 排程觸發。
 
-```powershell
-Invoke-RestMethod -Method Post https://你的-worker.workers.dev/run/clear -Headers $headers
-Invoke-RestMethod -Method Post https://你的-worker.workers.dev/run/pair -Headers $headers
-```
+## 可選環境變數
 
-查看線上日誌：
+- `PAIRUP_CSV_URL`：覆寫 Google Sheet CSV 網址。
+- `PAIRUP_SHEET_EDIT_URL`：覆寫要清除的 Google Sheet 編輯網址。
+- `PAIRUP_SHEET_GID`：覆寫工作表 gid。
+- `PAIRUP_ENABLE_FLEX=true`：啟用 pairup.c 的額外 flex 二人配對行為；預設為 `false`，與原 CLI 相同。
 
-```powershell
-npm run tail
-```
-
-## 登入失效時
-
-重新在本機登入 LINE，然後再執行：
-
-```powershell
-cd C:\Users\user\Desktop\project\line-local-puppeteer
-npm run cloudflare:auth:export
-cd cloudflare-worker
-npm run auth:upload
-```
-
-每次成功執行後，Worker 會把更新後的 cookies 寫回 KV，盡量延長登入狀態。
+配對邏輯在 `src/pairup.js`，純函式測試在 `test/pairup.test.js`。原始 GPL-3.0 `pairup.c` 放在上一層的 `vendor/pairup.c-master/`。

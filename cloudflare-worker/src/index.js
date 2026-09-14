@@ -1,24 +1,32 @@
 import puppeteer from "@cloudflare/puppeteer";
 
+import {
+  DEFAULT_PAIRUP_CSV_URL,
+  formatPairResult,
+  pairupCsv,
+  summarizeWorksheet,
+} from "./pairup.js";
+
 const AUTH_STATE_KEY =
   "line-auth-state";
 
+// Cloudflare cron uses UTC. These are 21:00 and 17:05 in Asia/Taipei.
 const CLEAR_CRON =
-  "0 23 * * *";
+  "0 13 * * *";
 
 const PAIR_CRON =
   "5 9 * * *";
 
-const CRON_COMMANDS =
+const DEFAULT_SHEET_EDIT_URL =
+  "https://docs.google.com/spreadsheets/d/19s78tQZO6-g5ph2sOiKDf1whIAt3fITZpoo5QeRf62A/edit";
+
+const DEFAULT_SHEET_GID =
+  "458839323";
+
+const CRON_ACTIONS =
   new Map([
     [CLEAR_CRON, "clear"],
     [PAIR_CRON, "pair"],
-  ]);
-
-const ALLOWED_COMMANDS =
-  new Set([
-    "clear",
-    "pair",
   ]);
 
 function jsonResponse(
@@ -38,6 +46,12 @@ function errorMessage(error) {
   return error instanceof Error
     ? error.message
     : String(error);
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) =>
+    setTimeout(resolve, milliseconds)
+  );
 }
 
 function isAuthorized(
@@ -63,7 +77,7 @@ function normalizeAuthState(raw) {
     state = JSON.parse(raw);
   } catch {
     throw new Error(
-      "KV 中的 LINE 登入狀態不是有效 JSON。"
+      "KV 裡的 LINE 登入狀態不是有效的 JSON。"
     );
   }
 
@@ -74,7 +88,7 @@ function normalizeAuthState(raw) {
     state.cookies.length === 0
   ) {
     throw new Error(
-      "KV 中的 LINE 登入狀態格式不正確。"
+      "KV 裡的 LINE 登入狀態不完整。"
     );
   }
 
@@ -86,7 +100,7 @@ function normalizeAuthState(raw) {
     );
   } catch {
     throw new Error(
-      "KV 登入狀態缺少有效的 chatUrl。"
+      "KV 登入狀態中的 chatUrl 無效。"
     );
   }
 
@@ -96,7 +110,7 @@ function normalizeAuthState(raw) {
       "chat.line.biz"
   ) {
     throw new Error(
-      "chatUrl 必須指向 https://chat.line.biz。"
+      "chatUrl 必須是 https://chat.line.biz 網址。"
     );
   }
 
@@ -114,11 +128,7 @@ async function loadAuthState(env) {
 
   if (!raw) {
     throw new Error(
-      [
-        "尚未上傳 LINE 登入狀態。",
-        "請先執行 npm run cloudflare:auth:export，",
-        "再於 cloudflare-worker 執行 npm run auth:upload。",
-      ].join(" ")
+      "找不到 LINE 登入狀態，請重新匯出並上傳 cookies。"
     );
   }
 
@@ -222,6 +232,59 @@ function mergeCookies(
   ];
 }
 
+function splitLineMessage(
+  message,
+  maximumLength = 4500
+) {
+  if (
+    message.length <= maximumLength
+  ) {
+    return [message];
+  }
+
+  const chunks = [];
+  let current = "";
+
+  for (const line of message.split("\n")) {
+    const next = current
+      ? `${current}\n${line}`
+      : line;
+
+    if (next.length <= maximumLength) {
+      current = next;
+      continue;
+    }
+
+    if (current) {
+      chunks.push(current);
+      current = "";
+    }
+
+    for (
+      let offset = 0;
+      offset < line.length;
+      offset += maximumLength
+    ) {
+      const part = line.slice(
+        offset,
+        offset + maximumLength
+      );
+
+      if (part.length === maximumLength) {
+        chunks.push(part);
+      } else {
+        current = part;
+      }
+    }
+  }
+
+  if (current) {
+    chunks.push(current);
+  }
+
+  return chunks;
+}
+
 async function focusComposer(
   composer
 ) {
@@ -235,7 +298,7 @@ async function focusComposer(
 
       if (!input) {
         throw new Error(
-          "LINE shadow textarea 不存在。"
+          "找不到 LINE shadow textarea。"
         );
       }
 
@@ -270,9 +333,10 @@ async function replaceComposerText(
     "Backspace"
   );
 
-  await page.keyboard.type(text, {
-    delay: 35,
-  });
+  // Input.insertText inserts line breaks without triggering LINE's Enter-to-send.
+  await page.keyboard.sendCharacter(
+    text
+  );
 }
 
 async function composerText(
@@ -289,19 +353,22 @@ async function composerText(
   );
 }
 
-async function sendLineCommand(
+async function sendLineMessage(
   env,
-  command
+  message
 ) {
   const checkOnly =
-    command === null;
+    message === null;
 
   if (
     !checkOnly &&
-    !ALLOWED_COMMANDS.has(command)
+    (
+      typeof message !== "string" ||
+      message.length === 0
+    )
   ) {
     throw new Error(
-      `不支援的指令：${command}`
+      "要傳送的 LINE 訊息不可為空。"
     );
   }
 
@@ -315,7 +382,7 @@ async function sendLineCommand(
 
   if (cookies.length === 0) {
     throw new Error(
-      "LINE 登入 cookies 已全部過期，請重新匯出。"
+      "LINE 登入 cookies 已全部過期，請重新匯出登入狀態。"
     );
   }
 
@@ -332,8 +399,6 @@ async function sendLineCommand(
       pages[0] ??
       await browser.newPage();
 
-    // Cloudflare 的 Puppeteer fork 目前由 Page 提供
-    // setCookie/cookies，而不是 BrowserContext。
     await page.setCookie(
       ...cookies
     );
@@ -371,46 +436,56 @@ async function sendLineCommand(
       );
     }
 
+    let messageCount = 0;
+
     if (!checkOnly) {
-      await replaceComposerText(
-        page,
-        composer,
-        command
-      );
+      const chunks =
+        splitLineMessage(message);
 
-      const typedText =
-        await composerText(
-          composer
+      for (const chunk of chunks) {
+        await replaceComposerText(
+          page,
+          composer,
+          chunk
         );
 
-      if (typedText !== command) {
-        throw new Error(
-          "LINE 訊息輸入驗證失敗。"
-        );
-      }
-
-      await page.keyboard.press(
-        "Enter"
-      );
-
-      await page.waitForFunction(
-        () => {
-          const host =
-            document.querySelector(
-              "textarea-ex#editor"
-            );
-
-          return (
-            host?.shadowRoot
-              ?.querySelector(
-                "textarea"
-              )?.value === ""
+        const typedText =
+          await composerText(
+            composer
           );
-        },
-        {
-          timeout: 15000,
+
+        if (typedText !== chunk) {
+          throw new Error(
+            "LINE 訊息輸入內容驗證失敗。"
+          );
         }
-      );
+
+        await page.keyboard.press(
+          "Enter"
+        );
+
+        await page.waitForFunction(
+          () => {
+            const host =
+              document.querySelector(
+                "textarea-ex#editor"
+              );
+
+            return (
+              host?.shadowRoot
+                ?.querySelector(
+                  "textarea"
+                )?.value === ""
+            );
+          },
+          {
+            timeout: 15000,
+          }
+        );
+
+        messageCount += 1;
+        await wait(250);
+      }
     }
 
     const updatedCookies =
@@ -446,7 +521,7 @@ async function sendLineCommand(
 
     return {
       ok: true,
-      command,
+      messageCount,
       sentAt:
         new Date().toISOString(),
     };
@@ -458,7 +533,7 @@ async function sendLineCommand(
         )
     ) {
       throw new Error(
-        "LINE 登入可能已失效，或聊天頁載入逾時。"
+        "LINE 登入狀態可能已失效，無法載入訊息輸入框。"
       );
     }
 
@@ -470,9 +545,314 @@ async function sendLineCommand(
   }
 }
 
+function pairupCsvUrl(env) {
+  return String(
+    env.PAIRUP_CSV_URL ||
+      DEFAULT_PAIRUP_CSV_URL
+  );
+}
+
+async function fetchWorksheetCsv(env) {
+  const url =
+    new URL(pairupCsvUrl(env));
+
+  url.searchParams.set(
+    "pairup_cache_bust",
+    String(Date.now())
+  );
+
+  const response = await fetch(
+    url.href,
+    {
+      headers: {
+        accept: "text/csv",
+      },
+      redirect: "follow",
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `下載 Google Sheet CSV 失敗（HTTP ${response.status}）。`
+    );
+  }
+
+  const source =
+    await response.text();
+
+  if (!source.trim()) {
+    throw new Error(
+      "下載到的 Google Sheet CSV 是空的。"
+    );
+  }
+
+  return source;
+}
+
+async function runPair(env) {
+  const source =
+    await fetchWorksheetCsv(env);
+
+  const result = pairupCsv(
+    source,
+    {
+      enableFlex:
+        String(
+          env.PAIRUP_ENABLE_FLEX ||
+            "false"
+        ).toLowerCase() === "true",
+    }
+  );
+
+  const message =
+    formatPairResult(result);
+
+  const sent =
+    await sendLineMessage(
+      env,
+      message
+    );
+
+  return {
+    ...sent,
+    action: "pair",
+    algorithm:
+      result.algorithm,
+    successfulRequests:
+      result.successfulRequests,
+    failedRequests:
+      result.failedRequests,
+    pairCount:
+      result.pairs.length,
+    singleCount:
+      result.singles.length,
+    message,
+  };
+}
+
+function sheetEditUrl(
+  env,
+  range
+) {
+  const url = new URL(
+    String(
+      env.PAIRUP_SHEET_EDIT_URL ||
+        DEFAULT_SHEET_EDIT_URL
+    )
+  );
+
+  const gid = String(
+    env.PAIRUP_SHEET_GID ||
+      DEFAULT_SHEET_GID
+  );
+
+  url.search = "";
+  url.hash =
+    `gid=${encodeURIComponent(gid)}` +
+    `&range=${encodeURIComponent(range)}`;
+
+  return url.href;
+}
+
+async function clearGoogleSheet(
+  env,
+  snapshot
+) {
+  if (snapshot.filledCellCount === 0) {
+    return snapshot;
+  }
+
+  const browser =
+    await puppeteer.launch(
+      env.BROWSER
+    );
+
+  try {
+    const pages =
+      await browser.pages();
+
+    const page =
+      pages[0] ??
+      await browser.newPage();
+
+    await page.setViewport({
+      width: 1920,
+      height: 945,
+    });
+
+    page.setDefaultTimeout(
+      30000
+    );
+
+    await page.goto(
+      sheetEditUrl(
+        env,
+        snapshot.clearRange
+      ),
+      {
+        waitUntil:
+          "domcontentloaded",
+        timeout: 60000,
+      }
+    );
+
+    const nameBox =
+      await page.waitForSelector(
+        "#t-name-box",
+        {
+          visible: true,
+          timeout: 30000,
+        }
+      );
+
+    if (!nameBox) {
+      throw new Error(
+        "Google Sheet 已開啟，但找不到範圍選擇框。"
+      );
+    }
+
+    const selectedRange =
+      await nameBox.evaluate(
+        (element) =>
+          String(element.value || "")
+      );
+
+    if (
+      selectedRange !==
+        snapshot.clearRange
+    ) {
+      await nameBox.click({
+        clickCount: 3,
+      });
+
+      await page.keyboard.down(
+        "Control"
+      );
+
+      try {
+        await page.keyboard.press(
+          "KeyA"
+        );
+      } finally {
+        await page.keyboard.up(
+          "Control"
+        );
+      }
+
+      await page.keyboard.type(
+        snapshot.clearRange
+      );
+
+      await page.keyboard.press(
+        "Enter"
+      );
+
+      await page.waitForFunction(
+        (expected) =>
+          document.querySelector(
+            "#t-name-box"
+          )?.value === expected,
+        {},
+        snapshot.clearRange
+      );
+    }
+
+    await page.keyboard.press(
+      "Backspace"
+    );
+
+    // Give Google Sheets time to apply and save the anonymous edit.
+    await wait(3000);
+  } finally {
+    await browser
+      .close()
+      .catch(() => {});
+  }
+
+  let latest = snapshot;
+
+  for (
+    let attempt = 0;
+    attempt < 8;
+    attempt += 1
+  ) {
+    const source =
+      await fetchWorksheetCsv(env);
+
+    latest =
+      summarizeWorksheet(source);
+
+    if (latest.filledCellCount === 0) {
+      return latest;
+    }
+
+    await wait(1500);
+  }
+
+  throw new Error(
+    `Google Sheet 清除後驗證失敗，C～R 還有 ${latest.filledCellCount} 格資料。`
+  );
+}
+
+async function runClear(env) {
+  const source =
+    await fetchWorksheetCsv(env);
+
+  const snapshot =
+    summarizeWorksheet(source);
+
+  await clearGoogleSheet(
+    env,
+    snapshot
+  );
+
+  const message =
+    snapshot.filledCellCount > 0
+      ? [
+        "✅ 今日配對填答已清除",
+        `共清除 ${snapshot.participantCount} 位成員、${snapshot.filledCellCount} 格時段。`,
+      ].join("\n")
+      : "✅ 今日配對填答已確認為空白，沒有需要清除的資料。";
+
+  const sent =
+    await sendLineMessage(
+      env,
+      message
+    );
+
+  return {
+    ...sent,
+    action: "clear",
+    participantCount:
+      snapshot.participantCount,
+    clearedCellCount:
+      snapshot.filledCellCount,
+    clearedRange:
+      snapshot.clearRange,
+    message,
+  };
+}
+
+async function runAction(
+  env,
+  action
+) {
+  if (action === "pair") {
+    return runPair(env);
+  }
+
+  if (action === "clear") {
+    return runClear(env);
+  }
+
+  throw new Error(
+    `不支援的動作：${action}`
+  );
+}
+
 async function runAndRecord(
   env,
-  command,
+  action,
   source
 ) {
   const startedAt =
@@ -480,9 +860,9 @@ async function runAndRecord(
 
   try {
     const result =
-      await sendLineCommand(
+      await runAction(
         env,
-        command
+        action
       );
 
     const record = {
@@ -492,7 +872,7 @@ async function runAndRecord(
     };
 
     await env.LINE_STATE.put(
-      `last-run:${command}`,
+      `last-run:${action}`,
       JSON.stringify(record)
     );
 
@@ -504,7 +884,7 @@ async function runAndRecord(
   } catch (error) {
     const record = {
       ok: false,
-      command,
+      action,
       source,
       startedAt,
       failedAt:
@@ -514,7 +894,7 @@ async function runAndRecord(
     };
 
     await env.LINE_STATE.put(
-      `last-run:${command}`,
+      `last-run:${action}`,
       JSON.stringify(record)
     );
 
@@ -565,21 +945,21 @@ export default {
     controller,
     env
   ) {
-    const command =
-      CRON_COMMANDS.get(
+    const action =
+      CRON_ACTIONS.get(
         controller.cron
       );
 
-    if (!command) {
+    if (!action) {
       console.warn(
-        `忽略未知排程：${controller.cron}`
+        `未知排程：${controller.cron}`
       );
       return;
     }
 
     await runAndRecord(
       env,
-      command,
+      action,
       `cron:${controller.cron}`
     );
   },
@@ -602,14 +982,20 @@ export default {
           "Asia/Taipei",
         schedules: [
           {
-            localTime: "07:00",
+            localTime: "21:00",
             cronUtc: CLEAR_CRON,
-            command: "clear",
+            action: "clear",
+            enabled: false,
+            behavior:
+              "已暫停；不可手動執行",
           },
           {
             localTime: "17:05",
             cronUtc: PAIR_CRON,
-            command: "pair",
+            action: "pair",
+            enabled: true,
+            behavior:
+              "計算配對結果並傳送；可手動測試",
           },
         ],
       });
@@ -649,7 +1035,7 @@ export default {
     ) {
       try {
         return jsonResponse(
-          await sendLineCommand(
+          await sendLineMessage(
             env,
             null
           )
@@ -666,20 +1052,15 @@ export default {
       }
     }
 
-    const match =
-      url.pathname.match(
-        /^\/run\/(clear|pair)$/
-      );
-
     if (
       request.method === "POST" &&
-      match
+      url.pathname === "/run/pair"
     ) {
       try {
         return jsonResponse(
           await runAndRecord(
             env,
-            match[1],
+            "pair",
             "manual"
           )
         );

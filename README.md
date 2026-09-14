@@ -1,110 +1,38 @@
-# LINE Local Puppeteer Test
+# LINE Pairup 自動排程
 
-純本機測試專案，不使用 Cloudflare Browser Run。
+這個專案使用 Puppeteer 操作 LINE Official Account Chat，不使用 LINE Messaging API。
 
-## 1. 安裝
+Cloudflare Worker 會直接讀取英文讀書會的 Google Sheet：
 
-```bat
+- 每天 17:05（Asia/Taipei）計算配對並把完整結果送到 `Ram`。
+- 自動 clear 目前暫停；清除程式碼保留，但 Cloudflare 沒有設定 clear cron。
+- `pair` 可手動執行；`clear` 刻意只允許排程執行。
+- 每次操作完成後會關閉整個 Puppeteer browser，所有分頁都會一併關閉。
+
+## 本機 LINE 登入與檢查
+
+```powershell
 npm install
-```
-
-## 2. 建立 config.json
-
-```bat
-copy config.example.json config.json
-```
-
-打開 `config.json`，把 `chatUrl` 改成真正的 LINE 群組聊天室網址：
-
-```json
-{
-  "chatUrl": "https://chat.line.biz/你的OA_ID/chat/你的CHAT_ID",
-  "headless": false,
-  "waitAfterOpenMs": 4000,
-  "waitAfterSendMs": 1500
-}
-```
-
-## 3. 第一次登入
-
-```bat
 npm run login
-```
-
-Chrome 打開後手動：
-
-```text
-登入 LINE
-→ 選 Official Account
-→ 聊天
-→ 目標群組
-```
-
-登入資料會保存在：
-
-```text
-line-profile/
-```
-
-完成後直接關瀏覽器。
-
-## 4. 檢查
-
-```bat
 npm run check
 ```
 
-成功應看到：
+登入資料保存在 `line-profile/`。目前帳號名稱是 `小企鵝 notify`，聊天室依 `config.json` 裡的固定 `chatUrl` 開啟，因此更名後不用重新取得網址。
 
-```text
-✅ 已保持登入
-✅ 已停在目標聊天室
-✅ 找到訊息輸入框
-```
+## 手動測試 pair
 
-如果失敗，截圖會放在：
+以下命令會呼叫已部署的 Worker、即時計算 Sheet，並真的送出配對結果：
 
-```text
-screenshots/
-```
-
-## 5. 傳 pair
-
-```bat
+```powershell
 npm run pair
 ```
 
-## 6. 傳 clear
+管理 token 由 `cloudflare-worker/.dev.vars` 的 `ADMIN_TOKEN` 讀取，不會顯示在命令列。
 
-```bat
-npm run clear
-```
+## Cloudflare Worker
 
-## 7. 傳任意文字
+詳細部署與端點說明請看 [cloudflare-worker/README.md](cloudflare-worker/README.md)。
 
-```bat
-npm run send -- hello
-```
+## pairup.c 原始碼
 
-## 注意
-
-不要分享或上傳：
-
-```text
-line-profile/
-config.json
-```
-
-`line-profile` 可能包含 LINE 登入狀態。
-
-本機版可繼續用來更新登入狀態或除錯。
-
-## Cloudflare 自動排程
-
-不使用 LINE Messaging API 的 Cloudflare Browser Run 版本位於：
-
-```text
-cloudflare-worker/
-```
-
-部署、登入狀態更新與手動檢查方式請參考 `cloudflare-worker/README.md`。
+配對演算法與訊息格式移植自使用者提供的 `pairup.c-master.zip`。原始 GPL-3.0 程式與授權文字保留在 `vendor/pairup.c-master/`。

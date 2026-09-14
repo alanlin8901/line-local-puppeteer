@@ -1,0 +1,26 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "line-oa-scheduler",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-14",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "browser": {
+    "binding": "BROWSER"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "LINE_STATE"
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "0 23 * * *",
+      "5 9 * * *"
+    ]
+  },
+  "observability": {
+    "enabled": true
+  }
+}

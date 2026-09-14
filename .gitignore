@@ -1,0 +1,8 @@
+node_modules/
+line-profile/
+config.json
+screenshots/
+*.log
+.wrangler/
+.dev.vars*
+.line-auth-state.json

@@ -1,0 +1,8 @@
+{
+  "accountName": "ice cream",
+  "conversationName": "Ram",
+  "chatUrl": "https://chat.line.biz/你的OA_ID/chat/你的CHAT_ID",
+  "headless": false,
+  "waitAfterOpenMs": 4000,
+  "waitAfterSendMs": 1500
+}

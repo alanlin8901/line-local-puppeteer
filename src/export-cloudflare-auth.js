@@ -4,6 +4,7 @@ import {
   closeBrowser,
   launchBrowser,
   loadConfig,
+  recoverLineLogin,
   sleep,
 } from "./common.js";
 
@@ -49,6 +50,11 @@ try {
     waitUntil: "domcontentloaded",
     timeout: 60000,
   });
+
+  await recoverLineLogin(
+    page,
+    chatUrl.href
+  );
 
   await sleep(4000);
 

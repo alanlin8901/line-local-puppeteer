@@ -10,6 +10,9 @@ import {
 const AUTH_STATE_KEY =
   "line-auth-state";
 
+const PENDING_CLEAR_NOTIFICATION_KEY =
+  "pending-notification:clear";
+
 // Cloudflare cron uses UTC. These are 07:00 and 17:05 in Asia/Taipei.
 const CLEAR_CRON =
   "0 23 * * *";
@@ -22,6 +25,11 @@ const DEFAULT_SHEET_EDIT_URL =
 
 const DEFAULT_SHEET_GID =
   "458839323";
+
+const CLEAR_NOTIFICATION_MESSAGE = [
+  "Hi everyone, 小企鵝 just updated the sheet, please fill it out before 17:00.😊",
+  "https://docs.google.com/spreadsheets/d/19s78tQZO6-g5ph2sOiKDf1whIAt3fITZpoo5QeRf62A/edit",
+].join("\n");
 
 const CRON_ACTIONS =
   new Map([
@@ -51,6 +59,262 @@ function errorMessage(error) {
 function wait(milliseconds) {
   return new Promise((resolve) =>
     setTimeout(resolve, milliseconds)
+  );
+}
+
+async function closeBrowserAndPages(
+  browser
+) {
+  if (!browser) {
+    return;
+  }
+
+  try {
+    const pages =
+      await browser.pages();
+
+    await Promise.allSettled(
+      pages.map(async (page) => {
+        if (!page.isClosed()) {
+          await page.close({
+            runBeforeUnload: false,
+          });
+        }
+      })
+    );
+  } catch {}
+
+  await browser
+    .close()
+    .catch(() => {});
+}
+
+function pageHostname(page) {
+  try {
+    return new URL(page.url())
+      .hostname;
+  } catch {
+    return "";
+  }
+}
+
+function pageMatchesTarget(
+  page,
+  targetUrl
+) {
+  try {
+    const current =
+      new URL(page.url());
+
+    const target =
+      new URL(targetUrl);
+
+    if (
+      current.hostname !==
+        target.hostname
+    ) {
+      return false;
+    }
+
+    if (
+      target.hostname ===
+        "chat.line.biz"
+    ) {
+      return current.pathname
+        .includes("/chat/");
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForTargetPage(
+  page,
+  targetUrl,
+  timeout = 30000
+) {
+  const deadline =
+    Date.now() + timeout;
+
+  while (Date.now() < deadline) {
+    if (
+      pageMatchesTarget(
+        page,
+        targetUrl
+      )
+    ) {
+      return true;
+    }
+
+    await wait(250);
+  }
+
+  return false;
+}
+
+async function waitForHostnameChange(
+  page,
+  previousHostname,
+  timeout = 30000
+) {
+  const deadline =
+    Date.now() + timeout;
+
+  while (Date.now() < deadline) {
+    const hostname =
+      pageHostname(page);
+
+    if (
+      hostname &&
+      hostname !== previousHostname
+    ) {
+      return hostname;
+    }
+
+    await wait(250);
+  }
+
+  throw new Error(
+    `點擊 LINE 登入後仍停在 ${previousHostname}。`
+  );
+}
+
+async function recoverLineLogin(
+  page,
+  targetUrl
+) {
+  const targetHostname =
+    new URL(targetUrl).hostname;
+
+  let clicks = 0;
+
+  for (
+    let transition = 0;
+    transition < 5 && clicks < 2;
+    transition += 1
+  ) {
+    const hostname =
+      pageHostname(page);
+
+    if (
+      pageMatchesTarget(
+        page,
+        targetUrl
+      )
+    ) {
+      return clicks;
+    }
+
+    if (hostname === targetHostname) {
+      if (
+        await waitForTargetPage(
+          page,
+          targetUrl,
+          10000
+        )
+      ) {
+        return clicks;
+      }
+
+      await page.goto(targetUrl, {
+        waitUntil:
+          "domcontentloaded",
+        timeout: 60000,
+      });
+
+      continue;
+    }
+
+    let selector;
+
+    if (hostname === "account.line.biz") {
+      // First click: the green LINE account button marked as the last login method.
+      selector =
+        "#login-btn-line button";
+    } else if (
+      hostname === "access.line.me"
+    ) {
+      // Second click: the remembered LINE account's Login button.
+      const rememberedAccount =
+        await page.$(
+          'a[href*="/oauth2/v2.1/relogin"]'
+        );
+
+      if (!rememberedAccount) {
+        throw new Error(
+          "LINE 沒有保留上次登入帳號，需要人工重新登入。"
+        );
+      }
+
+      selector =
+        'button.c-button--allow[type="submit"]';
+    } else {
+      throw new Error(
+        `LINE 登入跳到未預期的網域：${hostname || page.url()}`
+      );
+    }
+
+    const button =
+      await page.waitForSelector(
+        selector,
+        {
+          timeout: 20000,
+        }
+      );
+
+    if (!button) {
+      throw new Error(
+        `找不到 LINE 自動登入按鈕：${selector}`
+      );
+    }
+
+    await button.evaluate(
+      (element) => element.click()
+    );
+
+    clicks += 1;
+
+    await waitForHostnameChange(
+      page,
+      hostname
+    );
+  }
+
+  if (
+    await waitForTargetPage(
+      page,
+      targetUrl,
+      30000
+    )
+  ) {
+    return clicks;
+  }
+
+  if (
+    pageHostname(page) ===
+      targetHostname
+  ) {
+    await page.goto(targetUrl, {
+      waitUntil:
+        "domcontentloaded",
+      timeout: 60000,
+    });
+
+    if (
+      await waitForTargetPage(
+        page,
+        targetUrl,
+        15000
+      )
+    ) {
+      return clicks;
+    }
+  }
+
+  throw new Error(
+    `LINE 自動登入兩步完成後未回到 ${targetHostname} 的聊天室頁面。`
   );
 }
 
@@ -421,6 +685,12 @@ async function sendLineMessage(
       }
     );
 
+    const autoLoginClicks =
+      await recoverLineLogin(
+        page,
+        authState.chatUrl
+      );
+
     const composer =
       await page.waitForSelector(
         "textarea-ex#editor",
@@ -491,7 +761,9 @@ async function sendLineMessage(
     const updatedCookies =
       await page.cookies(
         authState.chatUrl,
-        "https://manager.line.biz/"
+        "https://manager.line.biz/",
+        "https://account.line.biz/",
+        "https://access.line.me/"
       );
 
     await env.LINE_STATE.put(
@@ -514,6 +786,7 @@ async function sendLineMessage(
         ok: true,
         loggedIn: true,
         composerFound: true,
+        autoLoginClicks,
         checkedAt:
           new Date().toISOString(),
       };
@@ -522,12 +795,14 @@ async function sendLineMessage(
     return {
       ok: true,
       messageCount,
+      autoLoginClicks,
       sentAt:
         new Date().toISOString(),
     };
   } catch (error) {
     if (
       errorMessage(error)
+        .toLowerCase()
         .includes(
           "waiting for selector"
         )
@@ -539,9 +814,9 @@ async function sendLineMessage(
 
     throw error;
   } finally {
-    await browser
-      .close()
-      .catch(() => {});
+    await closeBrowserAndPages(
+      browser
+    );
   }
 }
 
@@ -589,7 +864,61 @@ async function fetchWorksheetCsv(env) {
   return source;
 }
 
+async function sendPendingClearNotification(
+  env
+) {
+  const raw =
+    await env.LINE_STATE.get(
+      PENDING_CLEAR_NOTIFICATION_KEY
+    );
+
+  if (!raw) {
+    return null;
+  }
+
+  let notification;
+
+  try {
+    notification = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      "待補送的 clear 通知不是有效的 JSON。"
+    );
+  }
+
+  if (
+    !notification ||
+    typeof notification.message !==
+      "string" ||
+    !notification.message
+  ) {
+    throw new Error(
+      "待補送的 clear 通知內容不完整。"
+    );
+  }
+
+  const sent =
+    await sendLineMessage(
+      env,
+      notification.message
+    );
+
+  await env.LINE_STATE.delete(
+    PENDING_CLEAR_NOTIFICATION_KEY
+  );
+
+  return {
+    ...sent,
+    notification,
+  };
+}
+
 async function runPair(env) {
+  const recoveredClearNotification =
+    await sendPendingClearNotification(
+      env
+    );
+
   const source =
     await fetchWorksheetCsv(env);
 
@@ -626,6 +955,10 @@ async function runPair(env) {
       result.pairs.length,
     singleCount:
       result.singles.length,
+    recoveredClearNotification:
+      Boolean(
+        recoveredClearNotification
+      ),
     message,
   };
 }
@@ -764,9 +1097,9 @@ async function clearGoogleSheet(
     // Give Google Sheets time to apply and save the anonymous edit.
     await wait(3000);
   } finally {
-    await browser
-      .close()
-      .catch(() => {});
+    await closeBrowserAndPages(
+      browser
+    );
   }
 
   let latest = snapshot;
@@ -807,17 +1140,30 @@ async function runClear(env) {
   );
 
   const message =
-    snapshot.filledCellCount > 0
-      ? [
-        "✅ 今日配對填答已清除",
-        `共清除 ${snapshot.participantCount} 位成員、${snapshot.filledCellCount} 格時段。`,
-      ].join("\n")
-      : "✅ 今日配對填答已確認為空白，沒有需要清除的資料。";
+    CLEAR_NOTIFICATION_MESSAGE;
+
+  await env.LINE_STATE.put(
+    PENDING_CLEAR_NOTIFICATION_KEY,
+    JSON.stringify({
+      action: "clear",
+      createdAt:
+        new Date().toISOString(),
+      participantCount:
+        snapshot.participantCount,
+      clearedCellCount:
+        snapshot.filledCellCount,
+      clearedRange:
+        snapshot.clearRange,
+      message,
+    }),
+    {
+      expirationTtl: 86400,
+    }
+  );
 
   const sent =
-    await sendLineMessage(
+    await sendPendingClearNotification(
       env,
-      message
     );
 
   return {

@@ -16,6 +16,15 @@ Cloudflare cron 使用 UTC，因此設定是：
 
 `clear` 不提供手動執行端點，避免誤刪仍在使用的當日資料。
 
+LINE session 過期時，Worker 會自動點選「LINE帳號」及保留帳號的「登入」兩個步驟。clear 完成通知會先保存到 KV；若當下發送失敗，下一次 pair 前會先補送，不會因 Sheet 已清空而遺失通知。
+
+clear 完成後固定傳送以下通知（不附人數或格數）：
+
+```text
+Hi everyone, 小企鵝 just updated the sheet, please fill it out before 17:00.😊
+https://docs.google.com/spreadsheets/d/19s78tQZO6-g5ph2sOiKDf1whIAt3fITZpoo5QeRf62A/edit
+```
+
 ## 驗證與部署
 
 ```powershell

@@ -8,6 +8,15 @@ Cloudflare Worker 會直接讀取英文讀書會的 Google Sheet：
 - 每天 07:00（Asia/Taipei）清除 Google Sheet 的會員填答區，再把清除結果送到 `Ram`。
 - `pair` 可手動執行；`clear` 刻意只允許排程執行。
 - 每次操作完成後會關閉整個 Puppeteer browser，所有分頁都會一併關閉。
+- LINE 登入過期時會自動點選上次使用的 LINE 帳號及保留帳號登入。
+- clear 通知若暫時送不出去，會保存在 KV，下一次 pair 前先補送。
+
+clear 完成後固定傳送：
+
+```text
+Hi everyone, 小企鵝 just updated the sheet, please fill it out before 17:00.😊
+https://docs.google.com/spreadsheets/d/19s78tQZO6-g5ph2sOiKDf1whIAt3fITZpoo5QeRf62A/edit
+```
 
 ## 本機 LINE 登入與檢查
 

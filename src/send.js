@@ -4,6 +4,7 @@ import {
   closeBrowser,
   sleep,
   saveDebugScreenshot,
+  recoverLineLogin,
 } from "./common.js";
 
 const message =
@@ -254,13 +255,19 @@ async function waitForChatPage() {
       const url =
         page.url();
 
-      if (
-        url.startsWith(
-          "https://chat.line.biz/"
-        )
-      ) {
-        return page;
-      }
+      try {
+        const parsed = new URL(url);
+
+        if (
+          parsed.hostname ===
+            "chat.line.biz" &&
+          parsed.pathname.includes(
+            "/chat/"
+          )
+        ) {
+          return page;
+        }
+      } catch {}
     }
 
     await sleep(500);
@@ -511,6 +518,11 @@ try {
         "domcontentloaded",
       timeout: 60000,
     }
+  );
+
+  await recoverLineLogin(
+    managerPage,
+    "https://manager.line.biz/"
   );
 
   await sleep(4000);

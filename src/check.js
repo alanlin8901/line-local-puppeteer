@@ -5,6 +5,7 @@ import {
   sleep,
   saveDebugScreenshot,
   findComposer,
+  recoverLineLogin,
 } from "./common.js";
 
 const config = loadConfig();
@@ -21,7 +22,16 @@ try {
     timeout: 60000,
   });
 
+  const autoLoginClicks = await recoverLineLogin(
+    page,
+    config.chatUrl
+  );
+
   await sleep(config.waitAfterOpenMs);
+
+  if (autoLoginClicks > 0) {
+    console.log(`已自動完成 ${autoLoginClicks} 個 LINE 登入步驟`);
+  }
 
   console.log(`目前 URL：${page.url()}`);
 

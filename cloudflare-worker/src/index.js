@@ -10,9 +10,9 @@ import {
 const AUTH_STATE_KEY =
   "line-auth-state";
 
-// Cloudflare cron uses UTC. These are 21:00 and 17:05 in Asia/Taipei.
+// Cloudflare cron uses UTC. These are 07:00 and 17:05 in Asia/Taipei.
 const CLEAR_CRON =
-  "0 13 * * *";
+  "0 23 * * *";
 
 const PAIR_CRON =
   "5 9 * * *";
@@ -982,12 +982,12 @@ export default {
           "Asia/Taipei",
         schedules: [
           {
-            localTime: "21:00",
+            localTime: "07:00",
             cronUtc: CLEAR_CRON,
             action: "clear",
-            enabled: false,
+            enabled: true,
             behavior:
-              "已暫停；不可手動執行",
+              "清除 Google Sheet C～R 會員填答區並傳送結果；不可手動執行",
           },
           {
             localTime: "17:05",

@@ -5,7 +5,7 @@
 Cloudflare Worker 會直接讀取英文讀書會的 Google Sheet：
 
 - 每天 17:05（Asia/Taipei）計算配對並把完整結果送到 `Ram`。
-- 自動 clear 目前暫停；清除程式碼保留，但 Cloudflare 沒有設定 clear cron。
+- 每天 07:00（Asia/Taipei）清除 Google Sheet 的會員填答區，再把清除結果送到 `Ram`。
 - `pair` 可手動執行；`clear` 刻意只允許排程執行。
 - 每次操作完成後會關閉整個 Puppeteer browser，所有分頁都會一併關閉。
 

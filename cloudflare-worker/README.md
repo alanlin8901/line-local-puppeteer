@@ -5,13 +5,13 @@ Worker 使用 Cloudflare Browser Rendering 操作 `chat.line.biz` 和公開可�
 ## 排程（Asia/Taipei）
 
 - 17:05：下載當下的 Google Sheet CSV、執行 pairup 配對、傳送完整配對資訊。
-- 21:00 clear：目前暫停，程式碼保留但沒有啟用 cron。
+- 07:00：清除 Sheet 的 C～R 會員填答區、重新下載 CSV 驗證已清空、傳送清除摘要。
 
 Cloudflare cron 使用 UTC，因此設定是：
 
 ```text
 5 9 * * *   # 17:05 Asia/Taipei，pair
-# 0 13 * * *  # 21:00 Asia/Taipei，clear（目前停用）
+0 23 * * *  # 07:00 Asia/Taipei，clear
 ```
 
 `clear` 不提供手動執行端點，避免誤刪仍在使用的當日資料。
